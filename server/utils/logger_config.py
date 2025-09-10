@@ -3,12 +3,14 @@ import sys
 from logging.handlers import RotatingFileHandler
 import os
 
-
 def setup_logging(app):
     """Setup application logging"""
-
-    if not os.path.exists("logs"):
-        os.makedirs("logs")
+    try:
+        if not os.path.exists("logs"):
+            os.makedirs("logs")
+    except OSError as e:
+        print(f"Error creating logs directory: {e}")
+        sys.exit(1)
 
     if app.config.get("DEBUG"):
         logging_level = logging.DEBUG
@@ -32,9 +34,8 @@ def setup_logging(app):
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
+    # Configure app.logger to inherit from root (no duplicate handlers)
     app.logger.setLevel(logging_level)
-    app.logger.addHandler(file_handler)
-    app.logger.addHandler(console_handler)
 
     loggers = [
         "services.chat_service",
@@ -49,10 +50,10 @@ def setup_logging(app):
     for logger_name in loggers:
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging_level)
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
 
+    # Suppress noisy third-party logs
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("pymongo").setLevel(logging.WARNING)  # Reduce MongoDB heartbeat noise
 
     app.logger.info("Logging configured successfully")

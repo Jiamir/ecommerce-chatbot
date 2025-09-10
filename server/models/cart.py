@@ -1,19 +1,17 @@
 from datetime import datetime
+from pydantic import BaseModel
+from typing import Optional
 
-from models import db
+class Cart(BaseModel):
+    id: str
+    user_id: str
+    product_id: str
+    quantity: int = 1
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
-
-class Cart(db.Model):
-    __tablename__ = "cart"
-
-    id = db.Column(db.String(36), primary_key=True)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False)
-    product_id = db.Column(db.String(36), db.ForeignKey("products.id"), nullable=False)
-    quantity = db.Column(db.Integer, default=1, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.now())
-    updated_at = db.Column(
-        db.DateTime, default=datetime.now(), onupdate=datetime.now()
-    )
+    class Config:
+        arbitrary_types_allowed = True
 
     def to_dict(self):
         return {
@@ -21,6 +19,6 @@ class Cart(db.Model):
             "user_id": self.user_id,
             "product_id": self.product_id,
             "quantity": self.quantity,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

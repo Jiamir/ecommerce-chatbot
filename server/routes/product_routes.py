@@ -1,8 +1,8 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity, jwt_required
+from flask_jwt_extended import jwt_required, get_jwt_identity, jwt_required, verify_jwt_in_request
 import logging
 
-from models.product import Product
+# Removed: from models.product import Product (use from service)
 from services.product_service import ProductService
 from services.auth_service import AuthService
 
@@ -26,7 +26,7 @@ def get_products():
         limit = request.args.get("limit", 50, type=int)
 
         if not search_query:
-            products = Product.search_by_filters(
+            products = product_service.search_by_filters(
                 category=category,
                 subcategory=subcategory,
                 brand=brand,
@@ -72,11 +72,11 @@ def get_products():
 def get_product(product_id):
     """Get a specific product by ID"""
     try:
-        product = Product.query.get(product_id)
-
-        if not product:
+        doc = product_service.collection.find_one({"id": product_id})  # Direct access for simplicity
+        if not doc:
             return jsonify({"success": False, "message": "Product not found"}), 404
 
+        product = Product(**doc)
         return jsonify({"success": True, "product": product.to_dict()}), 200
 
     except Exception as e:
@@ -124,8 +124,6 @@ def get_recommendations():
 
         user_preferences = None
         try:
-            from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
-
             verify_jwt_in_request(optional=True)
             current_user_id = get_jwt_identity()
             if current_user_id:
@@ -158,23 +156,14 @@ def get_recommendations():
 def get_categories():
     """Get all product categories and subcategories"""
     try:
-        from sqlalchemy import distinct
+        # MongoDB aggregate for distinct category + subcategories
+        pipeline = [
+            {"$match": {"is_active": True}},
+            {"$group": {"_id": "$category", "subcategories": {"$addToSet": "$subcategory"}}}
+        ]
+        categories = list(product_service.collection.aggregate(pipeline))
 
-        categories = (
-            Product.query.with_entities(distinct(Product.category), Product.subcategory)
-            .filter(Product.is_active == True)
-            .all()
-        )
-
-        category_map = {}
-        for category, subcategory in categories:
-            if category not in category_map:
-                category_map[category] = set()
-            category_map[category].add(subcategory)
-
-        result = []
-        for category, subcategories in category_map.items():
-            result.append({"category": category, "subcategories": list(subcategories)})
+        result = [{"category": cat["_id"], "subcategories": cat["subcategories"]} for cat in categories]
 
         return jsonify({"success": True, "categories": result}), 200
 
@@ -187,18 +176,11 @@ def get_categories():
 def get_brands():
     """Get all product brands"""
     try:
-        from sqlalchemy import distinct
+        # MongoDB distinct
+        brands = product_service.collection.distinct("brand", {"is_active": True})
+        brands.sort()
 
-        brands = (
-            Product.query.with_entities(distinct(Product.brand))
-            .filter(Product.is_active == True)
-            .order_by(Product.brand)
-            .all()
-        )
-
-        brand_list = [brand[0] for brand in brands]
-
-        return jsonify({"success": True, "brands": brand_list}), 200
+        return jsonify({"success": True, "brands": brands}), 200
 
     except Exception as e:
         logger.error(f"Error in get_brands endpoint: {str(e)}")
@@ -209,28 +191,32 @@ def get_brands():
 def get_product_stats():
     """Get product statistics"""
     try:
-        from sqlalchemy import func
+        # MongoDB aggregates
+        total_products = product_service.collection.count_documents({"is_active": True})
+
+        total_categories = len(product_service.collection.distinct("category", {"is_active": True}))
+
+        total_brands = len(product_service.collection.distinct("brand", {"is_active": True}))
+
+        price_min = product_service.collection.aggregate([{"$match": {"is_active": True}}, {"$group": {"_id": None, "min": {"$min": "$price"}}}]).next()["min"] if total_products > 0 else 0
+
+        price_max = product_service.collection.aggregate([{"$match": {"is_active": True}}, {"$group": {"_id": None, "max": {"$max": "$price"}}}]).next()["max"] if total_products > 0 else 0
+
+        avg_rating = product_service.collection.aggregate([{"$match": {"is_active": True}}, {"$group": {"_id": None, "avg": {"$avg": "$rating"}}}]).next()["avg"] if total_products > 0 else 0
+        avg_rating = round(avg_rating, 2)
+
+        in_stock_count = product_service.collection.count_documents({"stock": {"$gt": 0}, "is_active": True})
 
         stats = {
-            "total_products": Product.query.filter(Product.is_active == True).count(),
-            "total_categories": Product.query.with_entities(
-                func.count(func.distinct(Product.category))
-            ).scalar(),
-            "total_brands": Product.query.with_entities(
-                func.count(func.distinct(Product.brand))
-            ).scalar(),
+            "total_products": total_products,
+            "total_categories": total_categories,
+            "total_brands": total_brands,
             "price_range": {
-                "min": Product.query.with_entities(func.min(Product.price)).scalar()
-                or 0,
-                "max": Product.query.with_entities(func.max(Product.price)).scalar()
-                or 0,
+                "min": price_min,
+                "max": price_max,
             },
-            "average_rating": round(
-                Product.query.with_entities(func.avg(Product.rating)).scalar() or 0, 2
-            ),
-            "in_stock_count": Product.query.filter(
-                Product.stock > 0, Product.is_active == True
-            ).count(),
+            "average_rating": avg_rating,
+            "in_stock_count": in_stock_count,
         }
 
         return jsonify({"success": True, "stats": stats}), 200

@@ -1,25 +1,26 @@
-import json
 import logging
 import uuid
 from datetime import datetime
+from werkzeug.security import generate_password_hash
 
 from models.product import Product
 from services.product_service import ProductService
+from config import Config as AppConfig  # Import MongoDB db
 
 logger = logging.getLogger(__name__)
-
 
 class DatabaseSeeder:
     """Utility class for seeding the database with initial data"""
 
-    def __init__(self, db):
-        self.db = db
+    def __init__(self):
+        self.db = AppConfig.db  # MongoDB database from config
+        self.products_collection = self.db["products"]  # Products collection
         self.product_service = ProductService()
 
     def seed_products(self):
         """Seed the database with sample products"""
         try:
-            if Product.query.count() > 0:
+            if self.products_collection.count_documents({}) > 0:
                 logger.info("Products already exist, skipping seeding")
                 return
 
@@ -29,10 +30,13 @@ class DatabaseSeeder:
 
             for product_data in products_data:
                 try:
+                    # Validate with Pydantic model
                     product = Product(**product_data)
-                    self.db.session.add(product)
-                    self.db.session.flush()
 
+                    # Insert into MongoDB
+                    self.products_collection.insert_one(product.dict())
+
+                    # Compute search text and metadata
                     search_text = product.get_search_text()
                     metadata = {
                         "category": product.category,
@@ -43,11 +47,16 @@ class DatabaseSeeder:
                         "in_stock": product.is_in_stock(),
                     }
 
+                    # Upsert embedding
                     self.product_service.vector_service.upsert_product_embedding(
                         product.id, search_text, metadata
                     )
 
-                    product.embedding_id = product.id
+                    # Set embedding_id
+                    self.products_collection.update_one(
+                        {"id": product.id},
+                        {"$set": {"embedding_id": product.id}}
+                    )
 
                 except Exception as e:
                     logger.error(
@@ -55,16 +64,15 @@ class DatabaseSeeder:
                     )
                     continue
 
-            self.db.session.commit()
             logger.info("Products seeded successfully")
 
         except Exception as e:
             logger.error(f"Error seeding products: {str(e)}")
-            self.db.session.rollback()
             raise
 
     def _get_sample_products(self):
         """Get sample product data"""
+        now = datetime.now()
         return [
             {
                 "id": str(uuid.uuid4()),
@@ -81,12 +89,15 @@ class DatabaseSeeder:
                 "stock": 45,
                 "features": [
                     "A17 Pro Chip",
-                    '6.1" Display',
+                    "6.1\" Display",
                     "48MP Camera",
                     "Titanium Build",
                 ],
                 "is_on_sale": True,
                 "sale_percentage": 9,
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -100,7 +111,10 @@ class DatabaseSeeder:
                 "review_count": 1923,
                 "image_url": "https://images.pexels.com/photos/30466741/pexels-photo-30466741.jpeg",
                 "stock": 32,
-                "features": ["200MP Camera", "S Pen", '6.8" Display', "AI Features"],
+                "features": ["200MP Camera", "S Pen", "6.8\" Display", "AI Features"],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -117,13 +131,16 @@ class DatabaseSeeder:
                 "features": [
                     "AI Photography",
                     "Pure Android",
-                    '6.7" Display',
+                    "6.7\" Display",
                     "Titan M2 Chip",
                 ],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
-                "name": 'MacBook Pro 16" M3 Max',
+                "name": "MacBook Pro 16\" M3 Max",
                 "description": "Ultimate creative powerhouse with M3 Max chip, stunning Liquid Retina XDR display",
                 "price": 2499.0,
                 "original_price": 2699.0,
@@ -136,12 +153,15 @@ class DatabaseSeeder:
                 "stock": 15,
                 "features": [
                     "M3 Max Chip",
-                    '16" Liquid Retina XDR',
+                    "16\" Liquid Retina XDR",
                     "36GB RAM",
                     "1TB SSD",
                 ],
                 "is_on_sale": True,
                 "sale_percentage": 7,
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -156,11 +176,14 @@ class DatabaseSeeder:
                 "image_url": "https://images.pexels.com/photos/3776438/pexels-photo-3776438.jpeg",
                 "stock": 22,
                 "features": [
-                    '13.4" OLED',
+                    "13.4\" OLED",
                     "Intel 12th Gen",
                     "16GB RAM",
                     "Premium Build",
                 ],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -175,6 +198,9 @@ class DatabaseSeeder:
                 "image_url": "https://images.pexels.com/photos/12877878/pexels-photo-12877878.jpeg",
                 "stock": 18,
                 "features": ["RTX 4070", "AMD Ryzen 9", "240Hz Display", "ROG Design"],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -197,6 +223,9 @@ class DatabaseSeeder:
                 ],
                 "is_on_sale": True,
                 "sale_percentage": 13,
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -216,6 +245,9 @@ class DatabaseSeeder:
                     "H2 Chip",
                     "MagSafe Case",
                 ],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -235,6 +267,9 @@ class DatabaseSeeder:
                     "Premium Materials",
                     "24hr Battery",
                 ],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -254,6 +289,9 @@ class DatabaseSeeder:
                     "Ray Tracing",
                     "DualSense Controller",
                 ],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -273,6 +311,9 @@ class DatabaseSeeder:
                     "Quick Resume",
                     "Smart Delivery",
                 ],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -295,6 +336,9 @@ class DatabaseSeeder:
                 ],
                 "is_on_sale": True,
                 "sale_percentage": 17,
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -314,6 +358,9 @@ class DatabaseSeeder:
                     "Voice Control",
                     "Smart Home Hub",
                 ],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -333,6 +380,9 @@ class DatabaseSeeder:
                     "Remote Control",
                     "Voice Commands",
                 ],
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
             {
                 "id": str(uuid.uuid4()),
@@ -355,5 +405,39 @@ class DatabaseSeeder:
                 ],
                 "is_on_sale": True,
                 "sale_percentage": 15,
+                "created_at": now,
+                "updated_at": now,
+                "is_active": True,
             },
         ]
+
+    # Placeholder for seeding other collections (e.g., users, carts)
+    def seed_users(self):
+        """Seed the database with sample users (example)"""
+        users_collection = self.db["users"]
+        if users_collection.count_documents({}) > 0:
+            logger.info("Users already exist, skipping seeding")
+            return
+
+        users_data = [
+            {
+                "id": str(uuid.uuid4()),
+                "email": "test@example.com",
+                "name": "Test User",
+                "password_hash": generate_password_hash("password123"),
+                "preferences": '{"favoriteCategories": [], "priceRange": [0, 2000], "favoriteBrands": []}',
+                "created_at": datetime.now(),
+                "updated_at": datetime.now(),
+                "is_active": True,
+            }
+        ]
+        logger.info(f"Seeding {len(users_data)} users...")
+        for user_data in users_data:
+            try:
+                users_collection.insert_one({"_cls": "User", **user_data})
+            except Exception as e:
+                logger.error(f"Error seeding user {user_data.get('email', 'Unknown')}: {str(e)}")
+                continue
+        logger.info("Users seeded successfully")
+
+    # Add similar methods for carts, chat_sessions, messages, user_likes as needed

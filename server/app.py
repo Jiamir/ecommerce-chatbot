@@ -2,19 +2,18 @@ import os
 
 from config import config
 from dotenv import load_dotenv
-from flask import Flask, jsonify
+from flask import Flask, jsonify, g
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
-from flask_migrate import Migrate
-from models import db
 from utils.logger_config import setup_logging
+
+# Import MongoDB db from config
+from config import Config as AppConfig  # To access db
+from utils.database_seeder import DatabaseSeeder
 
 load_dotenv()
 
-
 jwt = JWTManager()
-migrate = Migrate()
-
 
 def create_app(config_name=None):
     if config_name is None:
@@ -23,10 +22,7 @@ def create_app(config_name=None):
     app = Flask(__name__)
     app.config.from_object(config[config_name])
 
-    db.init_app(app)
     jwt.init_app(app)
-
-    migrate.init_app(app, db)
 
     CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
     setup_logging(app)
@@ -74,24 +70,24 @@ def create_app(config_name=None):
 
     @app.before_request
     def initialize_database():
-        """Initialize database and seed with sample data"""
-        app.before_request_funcs[None].remove(initialize_database)
+        """Initialize database and seed with sample data if empty"""
+        if not hasattr(g, 'seeded'):
+            try:
+                db = AppConfig.db  # MongoDB db
+                if db["products"].count_documents({}) == 0:  # Check if empty
+                    seeder = DatabaseSeeder()  # Correct instantiation
+                    seeder.seed_products()
+                    seeder.seed_users()  # Seed users too
 
-        try:
-            db.create_all()
-
-            from utils.database_seeder import DatabaseSeeder
-
-            seeder = DatabaseSeeder(db)
-            seeder.seed_products()
-
-            app.logger.info("Database initialized successfully")
-
-        except Exception as e:
-            app.logger.error(f"Error initializing database: {str(e)}")
+                app.logger.info("Database initialized successfully")
+            except Exception as e:
+                app.logger.error(f"Error initializing database: {str(e)}")
+                if app.config["DEBUG"]:  # Re-raise in debug mode
+                    raise
+            finally:
+                g.seeded = True  # Ensure this runs even on error
 
     return app
-
 
 app = create_app()
 

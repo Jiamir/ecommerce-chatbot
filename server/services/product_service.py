@@ -2,25 +2,28 @@ import logging
 from typing import List, Dict, Any, Optional
 from models.product import Product
 from .vector_service import VectorService
+from config import Config as AppConfig  # For db
+from datetime import datetime
+from pymongo import DESCENDING
 
 logger = logging.getLogger(__name__)
-
 
 class ProductService:
     """Service for product-related operations"""
 
     def __init__(self):
         self.vector_service = VectorService()
+        self.db = AppConfig.db
+        self.collection = self.db["products"]
 
     def create_product(self, product_data: Dict[str, Any]) -> Product:
         """Create a new product and generate its embedding"""
         try:
             product = Product(**product_data)
+            product.created_at = datetime.now()
+            product.updated_at = datetime.now()
 
-            from models import db
-
-            db.session.add(product)
-            db.session.flush()
+            self.collection.insert_one(product.dict())
 
             search_text = product.get_search_text()
             metadata = {
@@ -36,17 +39,16 @@ class ProductService:
                 product.id, search_text, metadata
             )
 
-            product.embedding_id = product.id
-            db.session.commit()
+            self.collection.update_one(
+                {"id": product.id},
+                {"$set": {"embedding_id": product.id}}
+            )
 
             logger.info(f"Created product: {product.name}")
             return product
 
         except Exception as e:
             logger.error(f"Error creating product: {str(e)}")
-            from models import db
-
-            db.session.rollback()
             raise
 
     def update_product(
@@ -54,13 +56,16 @@ class ProductService:
     ) -> Optional[Product]:
         """Update a product and refresh its embedding"""
         try:
-            product = Product.query.get(product_id)
-            if not product:
+            existing_doc = self.collection.find_one({"id": product_id})
+            if not existing_doc:
                 return None
 
+            product = Product(**existing_doc)
             for key, value in update_data.items():
                 if hasattr(product, key):
                     setattr(product, key, value)
+
+            product.updated_at = datetime.now()
 
             content_fields = [
                 "name",
@@ -85,42 +90,31 @@ class ProductService:
                     product.id, search_text, metadata
                 )
 
-            from models import db
-
-            db.session.commit()
+            self.collection.replace_one({"id": product_id}, product.dict())
 
             logger.info(f"Updated product: {product.name}")
             return product
 
         except Exception as e:
             logger.error(f"Error updating product: {str(e)}")
-            from models import db
-
-            db.session.rollback()
             raise
 
     def delete_product(self, product_id: str) -> bool:
         """Delete a product and its embedding"""
         try:
-            product = Product.query.get(product_id)
-            if not product:
+            existing_doc = self.collection.find_one({"id": product_id})
+            if not existing_doc:
                 return False
 
             self.vector_service.delete_product_embedding(product_id)
 
-            from models import db
+            self.collection.delete_one({"id": product_id})
 
-            db.session.delete(product)
-            db.session.commit()
-
-            logger.info(f"Deleted product: {product.name}")
+            logger.info(f"Deleted product: {existing_doc['name']}")
             return True
 
         except Exception as e:
             logger.error(f"Error deleting product: {str(e)}")
-            from models import db
-
-            db.session.rollback()
             raise
 
     def search_products(
@@ -134,47 +128,39 @@ class ProductService:
             )
 
             if not vector_results:
-                return Product.search_by_filters(search_query=query, limit=limit)
+                return self.search_by_filters(search_query=query, limit=limit)
 
             product_ids = [result["id"] for result in vector_results]
 
-            query_builder = Product.query.filter(Product.id.in_(product_ids))
+            mongo_filter = {"id": {"$in": product_ids}}
 
             if filters:
                 if filters.get("category"):
-                    query_builder = query_builder.filter(
-                        Product.category == filters["category"]
-                    )
+                    mongo_filter["category"] = filters["category"]
 
                 if filters.get("subcategory"):
-                    query_builder = query_builder.filter(
-                        Product.subcategory == filters["subcategory"]
-                    )
+                    mongo_filter["subcategory"] = filters["subcategory"]
 
                 if filters.get("brand"):
-                    query_builder = query_builder.filter(
-                        Product.brand == filters["brand"]
-                    )
+                    mongo_filter["brand"] = filters["brand"]
 
                 if filters.get("min_price") is not None:
-                    query_builder = query_builder.filter(
-                        Product.price >= filters["min_price"]
-                    )
+                    mongo_filter["price"] = {"$gte": filters["min_price"]}
 
                 if filters.get("max_price") is not None:
-                    query_builder = query_builder.filter(
-                        Product.price <= filters["max_price"]
-                    )
+                    if "price" not in mongo_filter:
+                        mongo_filter["price"] = {}
+                    mongo_filter["price"]["$lte"] = filters["max_price"]
 
                 if filters.get("min_rating") is not None:
-                    query_builder = query_builder.filter(
-                        Product.rating >= filters["min_rating"]
-                    )
+                    mongo_filter["rating"] = {"$gte": filters["min_rating"]}
 
                 if filters.get("in_stock_only"):
-                    query_builder = query_builder.filter(Product.stock > 0)
+                    mongo_filter["stock"] = {"$gt": 0}
 
-            products = query_builder.all()
+            docs = list(self.collection.find(mongo_filter))
+
+            products = [Product(**doc) for doc in docs]
 
             product_score_map = {
                 result["id"]: result["score"] for result in vector_results
@@ -196,10 +182,11 @@ class ProductService:
         """Get product recommendations"""
         try:
             if product_id:
-                product = Product.query.get(product_id)
-                if not product:
+                doc = self.collection.find_one({"id": product_id})
+                if not doc:
                     return []
 
+                product = Product(**doc)
                 search_text = product.get_search_text()
                 similar_results = self.vector_service.search_similar_products(
                     search_text,
@@ -218,14 +205,12 @@ class ProductService:
                 similar_ids = [r["id"] for r in similar_results]
 
             else:
-                return (
-                    Product.query.filter(Product.is_active == True)
-                    .order_by(Product.rating.desc())
-                    .limit(limit)
-                    .all()
-                )
+                docs = list(self.collection.find({"is_active": True}).sort("rating", DESCENDING).limit(limit))
+                return [Product(**doc) for doc in docs]
 
-            products = Product.query.filter(Product.id.in_(similar_ids)).all()
+            docs = list(self.collection.find({"id": {"$in": similar_ids}}))
+
+            products = [Product(**doc) for doc in docs]
 
             if similar_results:
                 score_map = {r["id"]: r["score"] for r in similar_results}
@@ -261,10 +246,11 @@ class ProductService:
     def bulk_generate_embeddings(self):
         """Generate embeddings for all products (useful for initial setup)"""
         try:
-            products = Product.query.filter(Product.is_active == True).all()
+            docs = list(self.collection.find({"is_active": True}))
 
             batch_data = []
-            for product in products:
+            for doc in docs:
+                product = Product(**doc)
                 search_text = product.get_search_text()
                 metadata = {
                     "category": product.category,
@@ -281,16 +267,65 @@ class ProductService:
 
             self.vector_service.batch_upsert_products(batch_data)
 
-            for product in products:
-                product.embedding_id = product.id
+            for doc in docs:
+                self.collection.update_one(
+                    {"id": doc["id"]},
+                    {"$set": {"embedding_id": doc["id"]}}
+                )
 
-            from models import db
-
-            db.session.commit()
-
-            logger.info(f"Generated embeddings for {len(products)} products")
-            return len(products)
+            logger.info(f"Generated embeddings for {len(docs)} products")
+            return len(docs)
 
         except Exception as e:
             logger.error(f"Error generating bulk embeddings: {str(e)}")
             raise
+
+    # Added from model: search_by_filters
+    def search_by_filters(
+        self,
+        category: Optional[str] = None,
+        subcategory: Optional[str] = None,
+        brand: Optional[str] = None,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+        min_rating: Optional[float] = None,
+        in_stock_only: bool = False,
+        search_query: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Product]:
+        """Search products with filters"""
+        mongo_filter = {"is_active": True}
+
+        if category:
+            mongo_filter["category"] = {"$regex": category, "$options": "i"}
+
+        if subcategory:
+            mongo_filter["subcategory"] = {"$regex": subcategory, "$options": "i"}
+
+        if brand:
+            mongo_filter["brand"] = {"$regex": brand, "$options": "i"}
+
+        if min_price is not None:
+            mongo_filter["price"] = {"$gte": min_price}
+
+        if max_price is not None:
+            if "price" not in mongo_filter:
+                mongo_filter["price"] = {}
+            mongo_filter["price"]["$lte"] = max_price
+
+        if min_rating is not None:
+            mongo_filter["rating"] = {"$gte": min_rating}
+
+        if in_stock_only:
+            mongo_filter["stock"] = {"$gt": 0}
+
+        if search_query:
+            mongo_filter["$or"] = [
+                {"name": {"$regex": search_query, "$options": "i"}},
+                {"description": {"$regex": search_query, "$options": "i"}},
+                {"brand": {"$regex": search_query, "$options": "i"}},
+                {"features": {"$regex": search_query, "$options": "i"}},
+            ]
+
+        docs = list(self.collection.find(mongo_filter).sort("rating", DESCENDING).limit(limit))
+        return [Product(**doc) for doc in docs]

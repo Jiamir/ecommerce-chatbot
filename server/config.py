@@ -24,7 +24,7 @@ class Config:
     PINECONE_ENVIRONMENT = os.environ.get("PINECONE_ENVIRONMENT")
     PINECONE_INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "ecommerce-products")
 
-    FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+    FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     EMBEDDING_DIMENSION = 384
